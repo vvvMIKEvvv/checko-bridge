@@ -1,17 +1,31 @@
 from contextlib import asynccontextmanager
+import hmac
+import json
+import time
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
+import jwt
 import os
 import requests
 from datetime import datetime
+from urllib.parse import urlsplit
 
 
 CHECKO_BASE = "https://api.checko.ru/v2"
 DEEPSEEK_BASE = "https://api.deepseek.com"
 TIMEOUT = 60
+
+OIDC_ISSUER = os.getenv("OIDC_ISSUER", "").rstrip("/")
+MCP_OWNER_SUB = os.getenv("MCP_OWNER_SUB", "").strip()
+MCP_RESOURCE_URL = os.getenv("MCP_RESOURCE_URL", "").strip()
+ZITADEL_INTROSPECTION_KEY_JSON = os.getenv(
+    "ZITADEL_INTROSPECTION_KEY_JSON", ""
+).strip()
+MCP_OAUTH_SCOPES = ("openid",)
 
 
 # MCP is mounted into the existing FastAPI application below at /mcp/.
@@ -25,6 +39,140 @@ mcp = FastMCP(
     streamable_http_path="/",
     stateless_http=True,
 )
+
+
+def oauth_settings_error() -> str | None:
+    missing = [
+        name
+        for name, value in (
+            ("OIDC_ISSUER", OIDC_ISSUER),
+            ("MCP_OWNER_SUB", MCP_OWNER_SUB),
+            ("MCP_RESOURCE_URL", MCP_RESOURCE_URL),
+            ("ZITADEL_INTROSPECTION_KEY_JSON", ZITADEL_INTROSPECTION_KEY_JSON),
+        )
+        if not value
+    ]
+    if missing:
+        return "Не заданы OAuth-переменные Render: " + ", ".join(missing)
+    return None
+
+
+def zitadel_introspection_key() -> dict:
+    """Read the JSON key of the separate ZITADEL API application."""
+    try:
+        key = json.loads(ZITADEL_INTROSPECTION_KEY_JSON)
+    except json.JSONDecodeError as error:
+        raise ValueError("ZITADEL_INTROSPECTION_KEY_JSON содержит некорректный JSON") from error
+
+    required = ("keyId", "key", "clientId")
+    if not all(isinstance(key.get(name), str) and key[name] for name in required):
+        raise ValueError(
+            "ZITADEL_INTROSPECTION_KEY_JSON должен содержать keyId, key и clientId"
+        )
+    return key
+
+
+def mcp_resource_metadata_url() -> str:
+    parsed = urlsplit(MCP_RESOURCE_URL)
+    return (
+        f"{parsed.scheme}://{parsed.netloc}"
+        "/.well-known/oauth-protected-resource"
+    )
+
+
+async def oauth_unauthorized(scope, receive, send, detail: str) -> None:
+    response = JSONResponse(
+        status_code=401,
+        content={"detail": detail},
+        headers={
+            "WWW-Authenticate": (
+                'Bearer resource_metadata="'
+                + mcp_resource_metadata_url()
+                + '", scope="'
+                + " ".join(MCP_OAUTH_SCOPES)
+                + '"'
+            )
+        },
+    )
+    await response(scope, receive, send)
+
+
+def verify_mcp_access_token(token: str) -> None:
+    """Validate either an opaque or a JWT ZITADEL access token by introspection."""
+    if error := oauth_settings_error():
+        raise RuntimeError(error)
+
+    key = zitadel_introspection_key()
+    now = int(time.time())
+    assertion = jwt.encode(
+        {
+            "iss": key["clientId"],
+            "sub": key["clientId"],
+            # ZITADEL requires the issuer URL here, not the introspection URL.
+            "aud": OIDC_ISSUER,
+            "iat": now,
+            "exp": now + 60,
+            "jti": str(uuid4()),
+        },
+        key["key"].replace("\\n", "\n"),
+        algorithm="RS256",
+        headers={"kid": key["keyId"]},
+    )
+
+    try:
+        response = requests.post(
+            f"{OIDC_ISSUER}/oauth/v2/introspect",
+            data={
+                "client_assertion_type": (
+                    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+                ),
+                "client_assertion": assertion,
+                "token": token,
+                "token_type_hint": "access_token",
+            },
+            timeout=TIMEOUT,
+        )
+        response.raise_for_status()
+        claims = response.json()
+    except (requests.RequestException, ValueError) as error:
+        raise ValueError("Не удалось проверить OAuth token через ZITADEL") from error
+
+    if claims.get("active") is not True:
+        raise ValueError("OAuth token неактивен")
+
+    if claims.get("iss") != OIDC_ISSUER:
+        raise ValueError("OAuth token выдан другим issuer")
+
+    subject = claims.get("sub")
+    if not isinstance(subject, str) or not hmac.compare_digest(subject, MCP_OWNER_SUB):
+        raise ValueError("Токен выдан не владельцу MCP")
+
+
+class MCPBearerAuthMiddleware:
+    """Require a valid ZITADEL OAuth access token for every MCP request."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        authorization = headers.get(b"authorization", b"").decode("latin-1")
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            await oauth_unauthorized(scope, receive, send, "Требуется OAuth Bearer token")
+            return
+
+        try:
+            verify_mcp_access_token(token)
+        except (jwt.PyJWTError, ValueError, RuntimeError):
+            await oauth_unauthorized(scope, receive, send, "Недействительный OAuth token")
+            return
+
+        await self.app(scope, receive, send)
 
 
 # =========================================================
@@ -270,11 +418,16 @@ def ask_deepseek(prompt: str) -> dict:
 
 
 # The MCP session manager must be started with the parent FastAPI app.
-mcp_asgi_app = mcp.streamable_http_app()
+# DCR and the authorization-code / PKCE flow are implemented by ZITADEL and
+# ChatGPT. This service is the protected resource server and introspects the
+# access token, because ZITADEL DCR access tokens are not guaranteed to be JWTs.
+mcp_asgi_app = MCPBearerAuthMiddleware(mcp.streamable_http_app())
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    if error := oauth_settings_error():
+        raise RuntimeError(error)
     async with mcp.session_manager.run():
         yield
 
@@ -285,6 +438,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.mount("/mcp", mcp_asgi_app)
+
+
+# =========================================================
+# MCP OAUTH DISCOVERY
+# =========================================================
+
+@app.get("/.well-known/oauth-protected-resource", include_in_schema=False)
+def oauth_protected_resource_metadata():
+    """Advertise the ZITADEL authorization server for the protected MCP."""
+    if error := oauth_settings_error():
+        raise HTTPException(status_code=500, detail=error)
+
+    return {
+        "resource": MCP_RESOURCE_URL,
+        "authorization_servers": [OIDC_ISSUER],
+        "scopes_supported": list(MCP_OAUTH_SCOPES),
+    }
 
 
 # =========================================================
