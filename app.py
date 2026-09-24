@@ -1,19 +1,30 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 import os
 import requests
 from datetime import datetime
 
 
-app = FastAPI(
-    title="Checko + DeepSeek Bridge",
-    version="2.0.0"
-)
-
 CHECKO_BASE = "https://api.checko.ru/v2"
 DEEPSEEK_BASE = "https://api.deepseek.com"
 TIMEOUT = 60
+
+
+# MCP is mounted into the existing FastAPI application below at /mcp/.
+# Stateless HTTP is appropriate for Render and for independent tool calls.
+mcp = FastMCP(
+    "Checko Bridge",
+    instructions=(
+        "Use these tools to retrieve Checko company data by INN "
+        "or to send a prompt to DeepSeek."
+    ),
+    streamable_http_path="/",
+    stateless_http=True,
+)
 
 
 # =========================================================
@@ -163,6 +174,117 @@ def call_deepseek(prompt: str):
         )
 
     return data
+
+
+# =========================================================
+# MCP TOOLS
+# =========================================================
+
+@mcp.tool()
+def get_company(inn: str) -> dict:
+    """Get the Checko company card for a 10- or 12-digit Russian INN."""
+    return call_checko("company", validate_inn(inn))
+
+
+@mcp.tool()
+def get_finances(inn: str) -> dict:
+    """Get extended Checko financial data for a 10- or 12-digit Russian INN."""
+    return call_checko(
+        "finances",
+        validate_inn(inn),
+        {"extended": "true"},
+    )
+
+
+@mcp.tool()
+def get_legal_cases(inn: str) -> dict:
+    """Get Checko arbitration and legal-case data for a Russian INN."""
+    return call_checko("legal-cases", validate_inn(inn))
+
+
+@mcp.tool()
+def get_enforcements(inn: str) -> dict:
+    """Get Checko enforcement-proceeding data for a Russian INN."""
+    return call_checko("enforcements", validate_inn(inn))
+
+
+@mcp.tool()
+def get_fedresurs(inn: str) -> dict:
+    """Get Checko Fedresurs messages and events for a Russian INN."""
+    return call_checko("fedresurs", validate_inn(inn))
+
+
+@mcp.tool()
+def get_bankruptcy_messages(inn: str) -> dict:
+    """Get Checko bankruptcy-message data for a Russian INN."""
+    return call_checko("bankruptcy-messages", validate_inn(inn))
+
+
+@mcp.tool()
+def get_company_bundle(inn: str) -> dict:
+    """Get all available Checko data for a Russian INN in one response."""
+    inn = validate_inn(inn)
+    methods = [
+        ("company", {}),
+        ("finances", {"extended": "true"}),
+        ("legal-cases", {}),
+        ("enforcements", {}),
+        ("fedresurs", {}),
+        ("bankruptcy-messages", {}),
+    ]
+
+    out = {
+        "inn": inn,
+        "generated_at": datetime.now().astimezone().isoformat(),
+        "source": "Checko API v2",
+        "results": {},
+        "errors": {},
+    }
+
+    for method, extra in methods:
+        try:
+            out["results"][method] = call_checko(method, inn, extra)
+        except HTTPException as error:
+            out["errors"][method] = error.detail
+
+    return out
+
+
+@mcp.tool()
+def ask_deepseek(prompt: str) -> dict:
+    """Send a prompt to DeepSeek and return its answer and usage information."""
+    if not prompt.strip():
+        raise ValueError("Пустой запрос")
+
+    data = call_deepseek(prompt)
+    try:
+        answer = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return data
+
+    return {
+        "model": data.get("model"),
+        "answer": answer,
+        "usage": data.get("usage", {}),
+    }
+
+
+# The MCP session manager must be started with the parent FastAPI app.
+mcp_asgi_app = mcp.streamable_http_app()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    async with mcp.session_manager.run():
+        yield
+
+
+app = FastAPI(
+    title="Checko + DeepSeek Bridge",
+    version="2.0.0",
+    lifespan=lifespan,
+)
+app.mount("/mcp", mcp_asgi_app)
 
 
 # =========================================================
