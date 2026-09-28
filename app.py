@@ -38,7 +38,6 @@ mcp = FastMCP(
     ),
     streamable_http_path="/",
     stateless_http=True,
-    json_response=True,
 )
 
 
@@ -329,37 +328,13 @@ def call_deepseek(prompt: str):
 # MCP TOOLS
 # =========================================================
 
-@mcp.tool(
-    meta={
-        "securitySchemes": [
-            {"type": "oauth2", "scopes": ["openid"]}
-        ]
-    },
-    annotations={
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    }
-)
+@mcp.tool()
 def get_company(inn: str) -> dict:
     """Get the Checko company card for a 10- or 12-digit Russian INN."""
     return call_checko("company", validate_inn(inn))
 
 
-@mcp.tool(
-    meta={
-        "securitySchemes": [
-            {"type": "oauth2", "scopes": ["openid"]}
-        ]
-    },
-    annotations={
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    }
-)
+@mcp.tool()
 def get_finances(inn: str) -> dict:
     """Get extended Checko financial data for a 10- or 12-digit Russian INN."""
     return call_checko(
@@ -369,91 +344,31 @@ def get_finances(inn: str) -> dict:
     )
 
 
-@mcp.tool(
-    meta={
-        "securitySchemes": [
-            {"type": "oauth2", "scopes": ["openid"]}
-        ]
-    },
-    annotations={
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    }
-)
+@mcp.tool()
 def get_legal_cases(inn: str) -> dict:
     """Get Checko arbitration and legal-case data for a Russian INN."""
     return call_checko("legal-cases", validate_inn(inn))
 
 
-@mcp.tool(
-    meta={
-        "securitySchemes": [
-            {"type": "oauth2", "scopes": ["openid"]}
-        ]
-    },
-    annotations={
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    }
-)
+@mcp.tool()
 def get_enforcements(inn: str) -> dict:
     """Get Checko enforcement-proceeding data for a Russian INN."""
     return call_checko("enforcements", validate_inn(inn))
 
 
-@mcp.tool(
-    meta={
-        "securitySchemes": [
-            {"type": "oauth2", "scopes": ["openid"]}
-        ]
-    },
-    annotations={
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    }
-)
+@mcp.tool()
 def get_fedresurs(inn: str) -> dict:
     """Get Checko Fedresurs messages and events for a Russian INN."""
     return call_checko("fedresurs", validate_inn(inn))
 
 
-@mcp.tool(
-    meta={
-        "securitySchemes": [
-            {"type": "oauth2", "scopes": ["openid"]}
-        ]
-    },
-    annotations={
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    }
-)
+@mcp.tool()
 def get_bankruptcy_messages(inn: str) -> dict:
     """Get Checko bankruptcy-message data for a Russian INN."""
     return call_checko("bankruptcy-messages", validate_inn(inn))
 
 
-@mcp.tool(
-    meta={
-        "securitySchemes": [
-            {"type": "oauth2", "scopes": ["openid"]}
-        ]
-    },
-    annotations={
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    }
-)
+@mcp.tool()
 def get_company_bundle(inn: str) -> dict:
     """Get all available Checko data for a Russian INN in one response."""
     inn = validate_inn(inn)
@@ -483,19 +398,7 @@ def get_company_bundle(inn: str) -> dict:
     return out
 
 
-@mcp.tool(
-    meta={
-        "securitySchemes": [
-            {"type": "oauth2", "scopes": ["openid"]}
-        ]
-    },
-    annotations={
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    }
-)
+@mcp.tool()
 def ask_deepseek(prompt: str) -> dict:
     """Send a prompt to DeepSeek and return its answer and usage information."""
     if not prompt.strip():
