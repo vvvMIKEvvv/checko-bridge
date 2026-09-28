@@ -38,6 +38,9 @@ mcp = FastMCP(
     ),
     streamable_http_path="/",
     stateless_http=True,
+    # ChatGPT's remote MCP client accepts JSON responses for Streamable HTTP.
+    # Keeping this explicit avoids an SSE-only negotiation failure.
+    json_response=True,
 )
 
 
@@ -73,10 +76,12 @@ def zitadel_introspection_key() -> dict:
 
 
 def mcp_resource_metadata_url() -> str:
+    """Return the RFC 9728 metadata URL for the mounted MCP resource."""
     parsed = urlsplit(MCP_RESOURCE_URL)
+    resource_path = parsed.path.rstrip("/")
     return (
         f"{parsed.scheme}://{parsed.netloc}"
-        "/.well-known/oauth-protected-resource"
+        f"/.well-known/oauth-protected-resource{resource_path}"
     )
 
 
@@ -445,6 +450,8 @@ app.mount("/mcp", mcp_asgi_app)
 # =========================================================
 
 @app.get("/.well-known/oauth-protected-resource", include_in_schema=False)
+@app.get("/.well-known/oauth-protected-resource/mcp", include_in_schema=False)
+@app.get("/.well-known/oauth-protected-resource/mcp/", include_in_schema=False)
 def oauth_protected_resource_metadata():
     """Advertise the ZITADEL authorization server for the protected MCP."""
     if error := oauth_settings_error():
