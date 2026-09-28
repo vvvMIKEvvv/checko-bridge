@@ -56,7 +56,7 @@ def oauth_settings_error() -> str | None:
         if not value
     ]
     if missing:
-        return "Не заданы OAuth-переменные Render: " + ", ".join(missing)
+        return "РќРµ Р·Р°РґР°РЅС‹ OAuth-РїРµСЂРµРјРµРЅРЅС‹Рµ Render: " + ", ".join(missing)
     return None
 
 
@@ -65,12 +65,12 @@ def zitadel_introspection_key() -> dict:
     try:
         key = json.loads(ZITADEL_INTROSPECTION_KEY_JSON)
     except json.JSONDecodeError as error:
-        raise ValueError("ZITADEL_INTROSPECTION_KEY_JSON содержит некорректный JSON") from error
+        raise ValueError("ZITADEL_INTROSPECTION_KEY_JSON СЃРѕРґРµСЂР¶РёС‚ РЅРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ JSON") from error
 
     required = ("keyId", "key", "clientId")
     if not all(isinstance(key.get(name), str) and key[name] for name in required):
         raise ValueError(
-            "ZITADEL_INTROSPECTION_KEY_JSON должен содержать keyId, key и clientId"
+            "ZITADEL_INTROSPECTION_KEY_JSON РґРѕР»Р¶РµРЅ СЃРѕРґРµСЂР¶Р°С‚СЊ keyId, key Рё clientId"
         )
     return key
 
@@ -83,6 +83,12 @@ def mcp_resource_metadata_url() -> str:
         f"{parsed.scheme}://{parsed.netloc}"
         f"/.well-known/oauth-protected-resource{resource_path}"
     )
+
+
+def mcp_authorization_server_url() -> str:
+    """Return this service's public origin used for OAuth metadata discovery."""
+    parsed = urlsplit(MCP_RESOURCE_URL)
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 async def oauth_unauthorized(scope, receive, send, detail: str) -> None:
@@ -140,17 +146,17 @@ def verify_mcp_access_token(token: str) -> None:
         response.raise_for_status()
         claims = response.json()
     except (requests.RequestException, ValueError) as error:
-        raise ValueError("Не удалось проверить OAuth token через ZITADEL") from error
+        raise ValueError("РќРµ СѓРґР°Р»РѕСЃСЊ РїСЂРѕРІРµСЂРёС‚СЊ OAuth token С‡РµСЂРµР· ZITADEL") from error
 
     if claims.get("active") is not True:
-        raise ValueError("OAuth token неактивен")
+        raise ValueError("OAuth token РЅРµР°РєС‚РёРІРµРЅ")
 
     if claims.get("iss") != OIDC_ISSUER:
-        raise ValueError("OAuth token выдан другим issuer")
+        raise ValueError("OAuth token РІС‹РґР°РЅ РґСЂСѓРіРёРј issuer")
 
     subject = claims.get("sub")
     if not isinstance(subject, str) or not hmac.compare_digest(subject, MCP_OWNER_SUB):
-        raise ValueError("Токен выдан не владельцу MCP")
+        raise ValueError("РўРѕРєРµРЅ РІС‹РґР°РЅ РЅРµ РІР»Р°РґРµР»СЊС†Сѓ MCP")
 
 
 class MCPBearerAuthMiddleware:
@@ -168,13 +174,13 @@ class MCPBearerAuthMiddleware:
         authorization = headers.get(b"authorization", b"").decode("latin-1")
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() != "bearer" or not token:
-            await oauth_unauthorized(scope, receive, send, "Требуется OAuth Bearer token")
+            await oauth_unauthorized(scope, receive, send, "РўСЂРµР±СѓРµС‚СЃСЏ OAuth Bearer token")
             return
 
         try:
             verify_mcp_access_token(token)
         except (jwt.PyJWTError, ValueError, RuntimeError):
-            await oauth_unauthorized(scope, receive, send, "Недействительный OAuth token")
+            await oauth_unauthorized(scope, receive, send, "РќРµРґРµР№СЃС‚РІРёС‚РµР»СЊРЅС‹Р№ OAuth token")
             return
 
         await self.app(scope, receive, send)
@@ -189,7 +195,7 @@ def get_checko_key():
     if not key:
         raise HTTPException(
             status_code=500,
-            detail="Не задан CHECKO_API_KEY"
+            detail="РќРµ Р·Р°РґР°РЅ CHECKO_API_KEY"
         )
     return key
 
@@ -200,7 +206,7 @@ def validate_inn(inn: str):
     if len(inn) not in (10, 12):
         raise HTTPException(
             status_code=400,
-            detail="ИНН должен содержать 10 или 12 цифр"
+            detail="РРќРќ РґРѕР»Р¶РµРЅ СЃРѕРґРµСЂР¶Р°С‚СЊ 10 РёР»Рё 12 С†РёС„СЂ"
         )
 
     return inn
@@ -226,7 +232,7 @@ def call_checko(method, inn, extra=None):
     except requests.RequestException as e:
         raise HTTPException(
             status_code=502,
-            detail=f"Ошибка связи с Checko: {e}"
+            detail=f"РћС€РёР±РєР° СЃРІСЏР·Рё СЃ Checko: {e}"
         )
 
     try:
@@ -263,7 +269,7 @@ def get_deepseek_key():
     if not key:
         raise HTTPException(
             status_code=500,
-            detail="Не задан DEEPSEEK_API_KEY"
+            detail="РќРµ Р·Р°РґР°РЅ DEEPSEEK_API_KEY"
         )
 
     return key
@@ -304,7 +310,7 @@ def call_deepseek(prompt: str):
     except requests.RequestException as e:
         raise HTTPException(
             status_code=502,
-            detail=f"Ошибка связи с DeepSeek: {e}"
+            detail=f"РћС€РёР±РєР° СЃРІСЏР·Рё СЃ DeepSeek: {e}"
         )
 
     try:
@@ -407,7 +413,7 @@ def get_company_bundle(inn: str) -> dict:
 def ask_deepseek(prompt: str) -> dict:
     """Send a prompt to DeepSeek and return its answer and usage information."""
     if not prompt.strip():
-        raise ValueError("Пустой запрос")
+        raise ValueError("РџСѓСЃС‚РѕР№ Р·Р°РїСЂРѕСЃ")
 
     data = call_deepseek(prompt)
     try:
@@ -459,7 +465,30 @@ def oauth_protected_resource_metadata():
 
     return {
         "resource": MCP_RESOURCE_URL,
-        "authorization_servers": [OIDC_ISSUER],
+        # ZITADEL currently publishes OIDC discovery but not RFC 8414 OAuth
+        # metadata. Point clients at our standards-compatible metadata facade;
+        # its operational endpoints remain ZITADEL's own endpoints below.
+        "authorization_servers": [mcp_authorization_server_url()],
+        "scopes_supported": list(MCP_OAUTH_SCOPES),
+    }
+
+
+@app.get("/.well-known/oauth-authorization-server", include_in_schema=False)
+def oauth_authorization_server_metadata():
+    """RFC 8414 metadata facade for ChatGPT remote MCP OAuth discovery."""
+    if error := oauth_settings_error():
+        raise HTTPException(status_code=500, detail=error)
+
+    return {
+        "issuer": mcp_authorization_server_url(),
+        "authorization_endpoint": f"{OIDC_ISSUER}/oauth/v2/authorize",
+        "token_endpoint": f"{OIDC_ISSUER}/oauth/v2/token",
+        "registration_endpoint": f"{OIDC_ISSUER}/oauth/v2/register",
+        "jwks_uri": f"{OIDC_ISSUER}/oauth/v2/keys",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        "code_challenge_methods_supported": ["S256"],
         "scopes_supported": list(MCP_OAUTH_SCOPES),
     }
 
@@ -642,7 +671,7 @@ def deepseek(request: DeepSeekRequest):
 
         raise HTTPException(
             status_code=400,
-            detail="Пустой запрос"
+            detail="РџСѓСЃС‚РѕР№ Р·Р°РїСЂРѕСЃ"
         )
 
     data = call_deepseek(
